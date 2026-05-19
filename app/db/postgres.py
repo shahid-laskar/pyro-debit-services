@@ -1,0 +1,104 @@
+"""
+app/db/postgres.py
+------------------
+Postgres connection pool — shared by debit_log.py and writeback_outbox.py.
+
+All FRC-specific table functions (frc_pyro_request_data, frc_txn_log) have
+been removed.  Only the pool lifecycle and get_pg_conn context manager remain.
+"""
+
+import functools
+import logging
+from contextlib import contextmanager
+from typing import Generator, Optional
+
+import psycopg2
+import psycopg2.pool
+import psycopg2.extras
+
+from app.config import settings
+
+logger = logging.getLogger(__name__)
+
+
+def _pg_retry(fn):
+    """Retry a synchronous DB function once on OperationalError.
+
+    When a pooled connection goes stale, get_pg_conn discards it and raises
+    OperationalError. A single retry is enough — the pool always creates a
+    fresh connection for the second attempt.
+    """
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except psycopg2.OperationalError as exc:
+            logger.warning(
+                "Postgres: %s failed with OperationalError (%s) — retrying once",
+                fn.__name__, exc,
+            )
+            return fn(*args, **kwargs)
+    return wrapper
+
+
+_pool: Optional[psycopg2.pool.ThreadedConnectionPool] = None
+
+
+# ── Pool lifecycle ─────────────────────────────────────────────────────────────
+
+def init_pg_pool() -> None:
+    global _pool
+    _pool = psycopg2.pool.ThreadedConnectionPool(
+        minconn=settings.pg_min_conn,
+        maxconn=settings.pg_max_conn,
+        host=settings.pg_host,
+        port=settings.pg_port,
+        database=settings.pg_database,
+        user=settings.pg_user,
+        password=settings.pg_password,
+        keepalives=1,
+        keepalives_idle=30,
+        keepalives_interval=10,
+        keepalives_count=5,
+    )
+    logger.info("Postgres pool initialised (min=%d max=%d)",
+                settings.pg_min_conn, settings.pg_max_conn)
+
+
+def close_pg_pool() -> None:
+    global _pool
+    if _pool:
+        _pool.closeall()
+        _pool = None
+        logger.info("Postgres pool closed")
+
+
+def is_pg_pool_ready() -> bool:
+    return _pool is not None
+
+
+@contextmanager
+def get_pg_conn() -> Generator:
+    conn = _pool.getconn()
+    # The pool has no built-in liveness check — swap out any connection the
+    # server dropped while it was idle (presents as conn.closed != 0).
+    if conn.closed:
+        logger.warning("Postgres: stale connection detected on checkout — replacing")
+        _pool.putconn(conn, close=True)
+        conn = _pool.getconn()
+    discard = False
+    try:
+        yield conn
+        conn.commit()
+    except Exception as exc:
+        discard = isinstance(exc, psycopg2.OperationalError) or bool(conn.closed)
+        try:
+            conn.rollback()
+        except Exception:
+            discard = True  # rollback itself failed — connection is unusable
+            logger.warning("Postgres: rollback failed — discarding connection")
+        raise
+    finally:
+        _pool.putconn(conn, close=discard)
+        if discard:
+            logger.warning("Postgres: broken connection discarded from pool")
