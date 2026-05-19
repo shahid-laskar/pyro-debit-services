@@ -81,3 +81,32 @@ When `ENABLE_SCHEDULER=true`, the following background jobs run automatically:
 - **Debit Batch Processing**: Runs every `FANCYSALE_INTERVAL_MINUTES` to process new transactions.
 - **Stuck Record Cleanup**: Runs every 15 minutes to automatically reset any rows stuck in `P` state beyond the configured threshold (`FANCYSALE_STUCK_MINUTES`).
 - **Daily Re-auth**: Runs at 00:10 daily to refresh Pyro authentication tokens for all enabled debit services.
+
+
+Viewed pyro_client.py:1-49
+Listed directory debit
+Listed directory services
+Viewed esim.py:1-75
+
+When you are ready to implement the actual business logic for the ESIM and SimSwap services, you will primarily need to update the following two adapter files:
+
+1. **`app/debit/services/esim.py`**
+2. **`app/debit/services/simswap.py`**
+
+Currently, both of these files contain stub classes (`EsimAdapter` and presumably `SimSwapAdapter`) with `implemented = False` and several methods raising `NotImplementedError`.
+
+### What you'll need to do in those files:
+
+You will need to replace the `NotImplementedError` raises with your actual logic for interacting with the database and formatting the requests. Specifically, you will implement these methods in each adapter:
+
+*   **`fetch_and_claim(self, batch_size: int) -> List[dict]`**: Logic to SELECT unprocessed records from the respective Oracle table and UPDATE them to a "processing" state so other workers don't grab them.
+*   **`map_to_pyro_params(self, record: dict) -> dict`**: Logic to map a single database record into the exact JSON payload expected by the Pyro API.
+*   **`get_record_ref(self, record: dict) -> str`**: Returns a unique identifier for the record (like a transaction ID or MSISDN) used for logging.
+*   **`mark_success(self, record: dict, pyro_txn_id: str, remarks: str)`**: Logic to UPDATE the Oracle table row to indicate the debit was successful.
+*   **`mark_failed(self, record: dict, remarks: str)`**: Logic to UPDATE the Oracle table row to indicate the debit failed.
+*   **`reset_stuck_processing(self, stuck_minutes: int) -> int`**: Logic to find records stuck in the "processing" state for too long and revert them back to "pending".
+
+### Additional Steps:
+*   **Change `implemented = False` to `implemented = True`** inside both class definitions once the logic is written.
+*   **Update your `.env` file** to set `ESIM_ENABLED=true` and `SIMSWAP_ENABLED=true` so the `main.py` scheduler and router start using them.
+*   (Optional) If you decide to keep your SQL queries in a separate file, you might also create or update files in the `app/db/` directory, but the methods calling those queries will still live in the two adapter files mentioned above.

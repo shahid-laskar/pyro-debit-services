@@ -33,7 +33,7 @@ from app.encryption import decrypt, encrypt
 
 logger = logging.getLogger(__name__)
 
-DEBIT_SUCCESS_CODE   = 200
+DEBIT_SUCCESS_CODE   = {200, 2000}
 DEBIT_ENDPOINT_PATH  = "/erp-stock-api/service-wallet-adjustment"
 
 
@@ -155,7 +155,7 @@ async def wallet_adjustment(
         data        = _parse_pyro_response(resp, label, token_manager.secret_key)
         status_code = data.get("statusCode", -1)
         status_text = data.get("status", "")
-        is_success  = "Y" if (status_code == DEBIT_SUCCESS_CODE
+        is_success  = "Y" if (status_code in DEBIT_SUCCESS_CODE
                                and status_text == "SUCCESS") else "N"
         pyro_txn_id = str(data.get("data", {}).get("pyroId", "")) or None
 
