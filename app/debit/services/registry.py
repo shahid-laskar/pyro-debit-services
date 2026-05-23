@@ -21,16 +21,22 @@ SERVICE_REGISTRY: dict[str, DebitServiceAdapter] = {
         token_manager=fancysale_tm,
         enabled=settings.fancysale_enabled,
         batch_size=settings.fancysale_batch_size,
+        interval_minutes=settings.fancysale_interval_minutes,
+        stuck_minutes=settings.fancysale_stuck_minutes,
     ),
     "SIMSWAP": SimswapAdapter(
         token_manager=simswap_tm,
         enabled=settings.simswap_enabled,
-        batch_size=200,
+        batch_size=settings.simswap_batch_size,
+        interval_minutes=settings.simswap_interval_minutes,
+        stuck_minutes=settings.simswap_stuck_minutes,
     ),
     "ESIM": EsimAdapter(
         token_manager=esim_tm,
         enabled=settings.esim_enabled,
-        batch_size=200,
+        batch_size=settings.esim_batch_size,
+        interval_minutes=settings.esim_interval_minutes,
+        stuck_minutes=settings.esim_stuck_minutes,
     ),
 }
 

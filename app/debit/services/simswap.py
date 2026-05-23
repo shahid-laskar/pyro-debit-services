@@ -24,13 +24,17 @@ class SimswapAdapter:
 
     def __init__(
         self,
-        token_manager: PyroAuthService,
-        enabled:       bool = False,
-        batch_size:    int  = 200,
+        token_manager:    PyroAuthService,
+        enabled:          bool = False,
+        batch_size:       int  = 200,
+        interval_minutes: int  = 30,
+        stuck_minutes:    int  = 10,
     ):
-        self.token_manager = token_manager
-        self.enabled       = enabled
-        self.batch_size    = batch_size
+        self.token_manager    = token_manager
+        self.enabled          = enabled
+        self.batch_size       = batch_size
+        self.interval_minutes = interval_minutes
+        self.stuck_minutes    = stuck_minutes
 
         if enabled:
             logger.warning(

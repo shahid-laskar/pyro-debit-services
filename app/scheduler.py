@@ -50,13 +50,14 @@ async def _debit_job(service_type: str):
 async def _stuck_cleanup_job():
     """
     Reset stuck-P Oracle records for all enabled debit services.
+    Each service uses its own adapter.stuck_minutes threshold.
     Runs every 15 minutes.
     """
     try:
         from app.debit.services.registry import get_enabled_services
         for adapter in get_enabled_services():
             count = await asyncio.to_thread(
-                adapter.reset_stuck_processing, settings.fancysale_stuck_minutes
+                adapter.reset_stuck_processing, adapter.stuck_minutes
             )
             if count:
                 logger.info(
@@ -90,7 +91,7 @@ def start_scheduler():
     for svc_type, adapter in SERVICE_REGISTRY.items():
         scheduler.add_job(
             _debit_job,
-            IntervalTrigger(minutes=settings.fancysale_interval_minutes),
+            IntervalTrigger(minutes=adapter.interval_minutes),
             args=[svc_type],
             id=f"debit_{svc_type.lower()}",
             replace_existing=True,
@@ -100,6 +101,11 @@ def start_scheduler():
             next_run_time=now
             if adapter.enabled and settings.run_debit_on_startup
             else None,
+        )
+        logger.info(
+            "Scheduler: registered debit_%s — every %dmin (startup=%s, enabled=%s)",
+            svc_type.lower(), adapter.interval_minutes,
+            settings.run_debit_on_startup, adapter.enabled,
         )
 
     # ── Stuck-record cleanup (all debit services, every 15 min) ───────────────
@@ -126,12 +132,8 @@ def start_scheduler():
 
     scheduler.start()
     logger.info(
-        "Scheduler started -- "
-        "debit_fancysale: every %dmin (startup=%s if enabled) | "
-        "stuck_cleanup: every 15min (startup=%s) | "
+        "Scheduler started — stuck_cleanup: every 15min (startup=%s) | "
         "debit_daily_auth: 00:10",
-        settings.fancysale_interval_minutes,
-        settings.run_debit_on_startup,
         settings.run_cleanup_on_startup,
     )
 

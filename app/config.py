@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     simswap_password: str = ""
     simswap_secret_key: str = ""
     simswap_enabled: bool = False
+    simswap_batch_size: int = 200
+    simswap_interval_minutes: int = 30
+    simswap_stuck_minutes: int = 10
 
     # ── ESIM debit credentials (feature off by default) ───────────────────────
     esim_api_key: str = ""
@@ -57,9 +60,13 @@ class Settings(BaseSettings):
     esim_password: str = ""
     esim_secret_key: str = ""
     esim_enabled: bool = False
+    esim_batch_size: int = 200
+    esim_interval_minutes: int = 30
+    esim_stuck_minutes: int = 10
 
     # ── Stuck-record cleanup thresholds ───────────────────────────────────────
-    # FancySale: reset Oracle CAF_ENTRY_DONE P→N after this many minutes
+    # Each service has its own stuck_minutes carried by the adapter (see above).
+    # fancysale_stuck_minutes is kept here for the FancySale adapter.
     fancysale_stuck_minutes: int = 10
 
     validate_disabled_debit_credentials: bool = False

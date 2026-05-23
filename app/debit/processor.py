@@ -99,7 +99,8 @@ async def run_debit_batch(adapter: DebitServiceAdapter) -> dict:
             bal_before  = data.get("balanceBefore", 0.0)
             bal_after   = data.get("balanceAfter",  0.0)
             remarks = (
-                f"[200] SUCCESS pyroId={pyro_txn_id} "
+                f"[200] SUCCESS {response.get('message', '')} "
+                f"pyroId={pyro_txn_id} "
                 f"balBefore={bal_before} balAfter={bal_after}"
             )
             await asyncio.to_thread(adapter.mark_success, record, pyro_txn_id, remarks)

@@ -21,24 +21,24 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
-def _pg_retry(fn):
-    """Retry a synchronous DB function once on OperationalError.
+# def _pg_retry(fn):
+#     """Retry a synchronous DB function once on OperationalError.
 
-    When a pooled connection goes stale, get_pg_conn discards it and raises
-    OperationalError. A single retry is enough — the pool always creates a
-    fresh connection for the second attempt.
-    """
-    @functools.wraps(fn)
-    def wrapper(*args, **kwargs):
-        try:
-            return fn(*args, **kwargs)
-        except psycopg2.OperationalError as exc:
-            logger.warning(
-                "Postgres: %s failed with OperationalError (%s) — retrying once",
-                fn.__name__, exc,
-            )
-            return fn(*args, **kwargs)
-    return wrapper
+#     When a pooled connection goes stale, get_pg_conn discards it and raises
+#     OperationalError. A single retry is enough — the pool always creates a
+#     fresh connection for the second attempt.
+#     """
+#     @functools.wraps(fn)
+#     def wrapper(*args, **kwargs):
+#         try:
+#             return fn(*args, **kwargs)
+#         except psycopg2.OperationalError as exc:
+#             logger.warning(
+#                 "Postgres: %s failed with OperationalError (%s) — retrying once",
+#                 fn.__name__, exc,
+#             )
+#             return fn(*args, **kwargs)
+#     return wrapper
 
 
 _pool: Optional[psycopg2.pool.ThreadedConnectionPool] = None

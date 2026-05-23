@@ -14,8 +14,9 @@ POST /admin/reset-stuck-debit/{service_type}— emergency: reset ALL P rows for 
 import asyncio
 import logging
 from datetime import datetime, timezone
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.config import settings
 from app.debit.token_managers import ALL_DEBIT_TOKEN_MANAGERS
@@ -77,10 +78,21 @@ async def trigger_debit(service_type: str):
     tags=["Admin"],
     dependencies=[Depends(require_admin_api_key)],
 )
-async def reset_stuck_debit(service_type: str, stuck_minutes: int = 0):
+async def reset_stuck_debit(
+    service_type: str,
+    stuck_minutes: Optional[int] = Query(
+        default=None,
+        description=(
+            "Age threshold in minutes. Records stuck in 'P' state longer than this "
+            "are reset to 'N'. Defaults to the service's configured stuck_minutes. "
+            "Pass 0 explicitly to reset ALL 'P' records regardless of age — use with caution."
+        ),
+    ),
+):
     """
-    Emergency reset: move all CAF_ENTRY_DONE='P' records back to 'N' for a service.
-    stuck_minutes=0 means ALL P records (no age filter) — use with caution.
+    Emergency reset: move stuck CAF_ENTRY_DONE='P' records back to 'N' for a service.
+    Omitting stuck_minutes uses the service's own configured threshold (safe default).
+    Passing stuck_minutes=0 resets ALL P records regardless of age.
     """
     from app.debit.services.registry import get_service
 
@@ -89,9 +101,10 @@ async def reset_stuck_debit(service_type: str, stuck_minutes: int = 0):
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
-    count = await asyncio.to_thread(adapter.reset_stuck_processing, stuck_minutes)
+    effective_minutes = stuck_minutes if stuck_minutes is not None else adapter.stuck_minutes
+    count = await asyncio.to_thread(adapter.reset_stuck_processing, effective_minutes)
     return {
-        "service_type":  service_type,
-        "stuck_minutes": stuck_minutes,
-        "rows_reset":    count,
+        "service_type":       service_type,
+        "stuck_minutes_used": effective_minutes,
+        "rows_reset":         count,
     }

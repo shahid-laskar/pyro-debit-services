@@ -34,7 +34,8 @@ class PyroAuthService:
         self.session_token:     Optional[str]   = None
         self.access_token:      Optional[str]   = None
         self._access_token_exp: Optional[float] = None  # Unix timestamp from JWT
-        self._auth_lock = asyncio.Lock()
+        self._auth_lock  = asyncio.Lock()   # serialises authenticate() (full re-login)
+        self._token_lock = asyncio.Lock()   # serialises get_access_token() checks
 
     # ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -166,55 +167,20 @@ class PyroAuthService:
                      self.label, data.get("statusCode"), data.get("message"))
         return False
 
-    async def get_action_token(self) -> Optional[str]:
-        """
-        GET /auth-api/generate-action-token
-        No request body. Response is plain JSON.
-        Always refreshes access token first (Pyro requirement).
-        actionToken: single-use, 1-minute expiry — generate immediately before recharge POST.
-        """
-        if not await self.refresh_access_token():
-            logger.error("[%s] Cannot get action token — access token refresh failed", self.label)
-            return None
-        try:
-            async with httpx.AsyncClient(verify=True, timeout=self._timeout()) as client:
-                resp = await client.get(
-                    f"{self.base_url}/auth-api/generate-action-token",
-                    headers={
-                        **self._base_headers(),
-                        "sessionToken": self.session_token,
-                        "accessToken":  self.access_token,
-                    },
-                )
-            data = self._parse_pyro_response(resp, "GENERATE_ACTION_TOKEN")
-        except httpx.TimeoutException as exc:
-            logger.error(
-                "Pyro generate action token request timed out after %.1fs: %s",
-                settings.pyro_request_timeout_seconds,
-                type(exc).__name__,
-            )
-            return None
-        except httpx.RequestError as exc:
-            logger.error(
-                "Pyro generate action token request failed with error: %s",
-                type(exc).__name__,
-            )
-            return None
-
-        if data.get("statusCode") == 2000:
-            d = data["data"]
-            self.access_token      = d["accessToken"]
-            self._access_token_exp = self._parse_jwt_exp(self.access_token)
-            logger.debug("[%s] Action token generated", self.label)
-            return d["actionToken"]
-
-        logger.error("[%s] Action token failed: %s — %s",
-                     self.label, data.get("statusCode"), data.get("message"))
-        return None
-
+    
     async def get_access_token(self) -> Optional[str]:
-        """Returns a valid access token, refreshing if needed."""
-        if not self._is_access_token_valid():
-            await self.refresh_access_token()
-        return self.access_token
-
+        """
+        Returns a valid access token, refreshing if needed.
+
+        Serialised under _token_lock: when many debit coroutines call this
+        simultaneously on an expired token, only the first actually refreshes —
+        the rest find the token valid when they finally acquire the lock.
+
+        _token_lock and _auth_lock are intentionally separate: refresh may call
+        authenticate() which acquires _auth_lock; nesting the same lock would
+        deadlock since asyncio.Lock is not reentrant.
+        """
+        async with self._token_lock:
+            if not self._is_access_token_valid():
+                await self.refresh_access_token()
+            return self.access_token

@@ -38,7 +38,7 @@ async def lifespan(app: FastAPI):
 
     enabled_unimplemented = [
         svc_type for svc_type, adapter in SERVICE_REGISTRY.items()
-        if adapter.enabled and not getattr(adapter, "implemented", True)
+        if adapter.enabled and not getattr(adapter, "implemented", False)
     ]
     if enabled_unimplemented:
         raise RuntimeError(
@@ -87,8 +87,8 @@ app = FastAPI(
     version="1.0.0",
     root_path=settings.root_path,
     lifespan=lifespan,
-    docs_url="/smpyro/docs",
-    openapi_url="/smpyro/openapi.json",
+    docs_url="/docs",
+    openapi_url="/openapi.json",
 )
 
 # ── Debit router (FancySale / SimSwap / ESIM) ─────────────────────────────────

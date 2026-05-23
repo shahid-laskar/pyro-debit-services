@@ -1,7 +1,7 @@
 """
 app/debit/services/fancysale.py
 --------------------------------
-FancySaleAdapter — reads from Oracle CAF_ADMIN.VANITYSALE_FRANCH_DATA and
+FancySaleAdapter — reads from Oracle CAF_ADMIN.VANITYSALE_FRANCH_DATA_LASKAR and
 drives the wallet-debit flow through Pyro /erp-stock-api/service-wallet-adjustment.
 
 MPIN decryption strategy
@@ -52,50 +52,75 @@ class FancySaleAdapter:
 
     def __init__(
         self,
-        token_manager: PyroAuthService,
-        enabled:       bool = True,
-        batch_size:    int  = 200,
+        token_manager:    PyroAuthService,
+        enabled:          bool = True,
+        batch_size:       int  = 200,
+        interval_minutes: int  = 30,
+        stuck_minutes:    int  = 10,
     ):
-        self.token_manager = token_manager
-        self.enabled       = enabled
-        self.batch_size    = batch_size
+        self.token_manager    = token_manager
+        self.enabled          = enabled
+        self.batch_size       = batch_size
+        self.interval_minutes = interval_minutes
+        self.stuck_minutes    = stuck_minutes
 
     # ── Interface implementation ───────────────────────────────────────────────
 
     def fetch_and_claim(self, batch_size: int) -> List[dict]:
         """
-        Step 1 — SELECT eligible rows ordered by TRANS_DATE ASC.
-        Step 2 — Attempt atomic claim for each row (UPDATE WHERE state IN eligible).
-        Step 3 — Only rows whose UPDATE returned rowcount == 1 are returned.
+        Selects and claims eligible rows in two SQL steps.
 
-        MPIN is decrypted inside Oracle by CAF_ADMIN.F_DECRYPT so Python receives
-        plain text in the 'plain_mpin' column — no further decrypt needed.
+        VANITYSALE_FRANCH_DATA_LASKAR is a view and contains the Oracle function
+        call F_DECRYPT(MPIN), which makes FOR UPDATE SKIP LOCKED illegal
+        (ORA-02014).  Instead we use an optimistic UPDATE-as-lock pattern:
+
+        Step 1 — SELECT the n oldest eligible rows (no locking clause).
+          • Wrapped in a subquery so ORDER BY applies before ROWNUM, giving the
+            true n oldest rows (bare ROWNUM + ORDER BY would not be ordered).
+
+        Step 2 — For each candidate, UPDATE … WHERE REFID = ? AND
+            CAF_ENTRY_DONE IN ('N','QM','QB').
+          • If another worker already claimed the row, rowcount == 0 and we
+            simply skip it.  Only rows where rowcount == 1 are truly ours.
+          • The per-row check replaces the FOR UPDATE lock guarantee at the cost
+            of one extra round-trip per race (rare in practice with a single
+            scheduler instance).
+
+        MPIN is decrypted inside Oracle by CAF_ADMIN.F_DECRYPT so Python
+        receives plain text in the 'plain_mpin' column — no Python decrypt
+        needed here.
         """
         if not self.enabled:
             return []
 
+        # Subquery ensures ORDER BY is applied before ROWNUM slicing.
         select_sql = """
-            SELECT
-                REFID,
-                CTOPUPNO,
-                FANCY_NO,
-                AMOUNT,
-                CAF_ADMIN.F_DECRYPT(MPIN) AS plain_mpin,
-                MPIN_LENGTH,
-                SS_REQUEST_ID,
-                CSCCODE,
-                CIRCLE_CODE,
-                TRANS_DATE,
-                MODULE_TYPE,
-                CAF_ENTRY_DONE
-            FROM CAF_ADMIN.VANITYSALE_FRANCH_DATA
-            WHERE CAF_ENTRY_DONE IN ('N', 'QM', 'QB')
-              AND ROWNUM <= :batch_size
-            ORDER BY TRANS_DATE ASC
+            SELECT *
+            FROM (
+                SELECT
+                    REFID,
+                    CTOPUPNO,
+                    FANCY_NO,
+                    AMOUNT,
+                    CAF_ADMIN.F_DECRYPT(MPIN) AS plain_mpin,
+                    MPIN_LENGTH,
+                    SS_REQUEST_ID,
+                    CSCCODE,
+                    CIRCLE_CODE,
+                    TRANS_DATE,
+                    MODULE_TYPE,
+                    CAF_ENTRY_DONE
+                FROM CAF_ADMIN.VANITYSALE_FRANCH_DATA_LASKAR
+                WHERE CAF_ENTRY_DONE IN ('N', 'QM', 'QB')
+                ORDER BY TRANS_DATE ASC
+            )
+            WHERE ROWNUM <= :batch_size
         """
 
+        # Re-check eligibility in the WHERE clause so a concurrent claim
+        # (rowcount == 0) is detected and the row is silently skipped.
         claim_sql = """
-            UPDATE CAF_ADMIN.VANITYSALE_FRANCH_DATA
+            UPDATE CAF_ADMIN.VANITYSALE_FRANCH_DATA_LASKAR
             SET    CAF_ENTRY_DONE = 'P',
                    CAF_ENTRY_DATE = SYSDATE,
                    PYRO_REMARKS   = 'Processing started'
@@ -103,11 +128,9 @@ class FancySaleAdapter:
               AND  CAF_ENTRY_DONE IN ('N', 'QM', 'QB')
         """
 
-        claimed: List[dict] = []
         with get_oracle_conn() as conn:
             cur = conn.cursor()
 
-            # Fetch candidates
             cur.execute(select_sql, batch_size=batch_size)
             cols = [c[0].lower() for c in cur.description]
             candidates = [dict(zip(cols, row)) for row in cur.fetchall()]
@@ -115,21 +138,22 @@ class FancySaleAdapter:
             if not candidates:
                 return []
 
-            # Attempt to claim each one
+            claimed = []
             for row in candidates:
-                cur.execute(claim_sql, refid=row["refid"])
+                cur.execute(claim_sql, {"refid": row["refid"]})
                 if cur.rowcount == 1:
                     claimed.append(row)
-                else:
-                    logger.warning(
-                        "[FANCYSALE] fetch_and_claim: REFID=%s already claimed by another "
-                        "process — skipping", row["refid"]
-                    )
 
             conn.commit()
 
-        logger.info("[FANCYSALE] fetch_and_claim: %d/%d rows claimed",
-                    len(claimed), len(candidates))
+        if len(claimed) < len(candidates):
+            logger.warning(
+                "[FANCYSALE] fetch_and_claim: %d candidate(s) found, %d claimed "
+                "(%d lost to concurrent worker)",
+                len(candidates), len(claimed), len(candidates) - len(claimed),
+            )
+        else:
+            logger.info("[FANCYSALE] fetch_and_claim: %d row(s) claimed", len(claimed))
         return claimed
 
     def map_to_pyro_params(self, record: dict) -> dict:
@@ -154,10 +178,14 @@ class FancySaleAdapter:
                 f"got {len(mpin)}, expected {expected_len}"
             )
 
-        # CTOPUPNO and FANCY_NO are NUMBER in Oracle — cast to int then str to
-        # strip any decimal point or leading zeros Oracle might have added.
-        source_msisdn = str(int(record["ctopupno"]))
-        dest_msisdn   = str(int(record["fancy_no"]))
+        raw_ctopupno = record.get("ctopupno")
+        raw_fancy_no = record.get("fancy_no")
+        if raw_ctopupno is None:
+            raise ValueError(f"REFID={record['refid']}: CTOPUPNO is NULL in Oracle")
+        if raw_fancy_no is None:
+            raise ValueError(f"REFID={record['refid']}: FANCY_NO is NULL in Oracle")
+        source_msisdn = str(int(raw_ctopupno))
+        dest_msisdn   = str(int(raw_fancy_no))
         amount        = float(record["amount"])
         client_id     = str(record["ss_request_id"])
         remarks       = str(record.get("module_type") or "FANCYSALE")
@@ -177,7 +205,7 @@ class FancySaleAdapter:
     def mark_success(self, record: dict, pyro_txn_id: str, remarks: str) -> None:
         """Write Y + TRANSACTION_ID + PYRO_REMARKS + PROCESSED_SM to Oracle."""
         sql = """
-            UPDATE CAF_ADMIN.VANITYSALE_FRANCH_DATA
+            UPDATE CAF_ADMIN.VANITYSALE_FRANCH_DATA_LASKAR
             SET    CAF_ENTRY_DONE = 'Y',
                    TRANSACTION_ID = :pyro_txn_id,
                    PYRO_REMARKS   = :remarks,
@@ -209,7 +237,7 @@ class FancySaleAdapter:
     def mark_failed(self, record: dict, remarks: str) -> None:
         """Write R + PYRO_REMARKS to Oracle."""
         sql = """
-            UPDATE CAF_ADMIN.VANITYSALE_FRANCH_DATA
+            UPDATE CAF_ADMIN.VANITYSALE_FRANCH_DATA_LASKAR
             SET    CAF_ENTRY_DONE = 'R',
                    PYRO_REMARKS   = :remarks
             WHERE  REFID          = :refid
@@ -245,7 +273,7 @@ class FancySaleAdapter:
             return 0
 
         sql = """
-            UPDATE CAF_ADMIN.VANITYSALE_FRANCH_DATA
+            UPDATE CAF_ADMIN.VANITYSALE_FRANCH_DATA_LASKAR
             SET    CAF_ENTRY_DONE = 'N',
                    PYRO_REMARKS   = 'Reset: stuck in processing state'
             WHERE  CAF_ENTRY_DONE  = 'P'

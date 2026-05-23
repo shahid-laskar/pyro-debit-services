@@ -76,6 +76,7 @@ def insert_debit_txn_log(
             %s, %s, %s, %s
         )
     """
+
     try:
         with get_pg_conn() as conn:
             with conn.cursor() as cur:
