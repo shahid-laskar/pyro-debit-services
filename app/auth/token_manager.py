@@ -37,7 +37,6 @@ class PyroAuthService:
         self._auth_lock  = asyncio.Lock()   # serialises authenticate() (full re-login)
         self._token_lock = asyncio.Lock()   # serialises get_access_token() checks
 
-    # ── Helpers ────────────────────────────────────────────────────────────────
 
     def _base_headers(self) -> dict:
         return {"apiKey": self.api_key}
@@ -46,7 +45,7 @@ class PyroAuthService:
         return httpx.Timeout(settings.pyro_request_timeout_seconds)
         
     def _parse_jwt_exp(self, token: str) -> Optional[float]:
-        """Extract exp claim from JWT payload — no signature validation needed."""
+        
         try:
             part = token.split(".")[1]
             part += "=" * (-len(part) % 4)
@@ -60,9 +59,7 @@ class PyroAuthService:
         return self._access_token_exp > datetime.now(timezone.utc).timestamp() + 60
 
     def _parse_pyro_response(self, resp: httpx.Response, label: str) -> dict:
-        """
-        Parse a Pyro response as plain JSON first, with encrypted fallback.
-        """
+        
         raw = resp.text.strip()
         try:
             return resp.json()
@@ -80,11 +77,7 @@ class PyroAuthService:
     # ── Public API ─────────────────────────────────────────────────────────────
 
     async def authenticate(self) -> bool:
-        """
-        POST /auth-api/authentication
-        Request encrypted. Response is plain JSON in the current Pyro environment.
-        Called on startup and daily by scheduler.
-        """
+        
         async with self._auth_lock:
             body = {"loginId": self.login_id, "password": self.password}
             encrypted_body = encrypt(json.dumps(body), self.secret_key)
@@ -125,11 +118,7 @@ class PyroAuthService:
             return False
 
     async def refresh_access_token(self) -> bool:
-        """
-        GET /auth-api/refresh-access-token
-        No request body. Response is plain JSON.
-        Always called before generating an action token.
-        """
+        
         if not self.session_token or not self.access_token:
             logger.warning("refresh_access_token called before authenticate - re-authenticating")
             return await self.authenticate()
@@ -169,17 +158,7 @@ class PyroAuthService:
 
     
     async def get_access_token(self) -> Optional[str]:
-        """
-        Returns a valid access token, refreshing if needed.
-
-        Serialised under _token_lock: when many debit coroutines call this
-        simultaneously on an expired token, only the first actually refreshes —
-        the rest find the token valid when they finally acquire the lock.
-
-        _token_lock and _auth_lock are intentionally separate: refresh may call
-        authenticate() which acquires _auth_lock; nesting the same lock would
-        deadlock since asyncio.Lock is not reentrant.
-        """
+       
         async with self._token_lock:
             if not self._is_access_token_valid():
                 await self.refresh_access_token()

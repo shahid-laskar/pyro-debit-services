@@ -110,3 +110,42 @@ You will need to replace the `NotImplementedError` raises with your actual logic
 *   **Change `implemented = False` to `implemented = True`** inside both class definitions once the logic is written.
 *   **Update your `.env` file** to set `ESIM_ENABLED=true` and `SIMSWAP_ENABLED=true` so the `main.py` scheduler and router start using them.
 *   (Optional) If you decide to keep your SQL queries in a separate file, you might also create or update files in the `app/db/` directory, but the methods calling those queries will still live in the two adapter files mentioned above.
+
+
+### Deployment
+
+On Windows dev PC:
+bash# Build for linux/amd64 (server architecture)
+docker buildx build --platform linux/amd64 -t pyro_debit_service:v1 .
+# use :latest/v2/etc
+# Build manually with buildx
+
+# Save and compress
+docker save pyro_debit_service:v1 | gzip > pyro_debit_service_v1.tar.gz
+
+# Copy to server (use your server's user and IP)
+
+scp pyro_debit_service_v1.tar.gz m01400120u1@10.201.222.67:/home/m01400120u1/debit_services/
+
+inside server: nano docker-compose.yml paste docker-compose-prod.yml
+
+scp .env m01400120u1@10.201.222.67:/home/m01400120u1/debit_services/
+
+
+On the server:
+cd /opt/debit_services
+
+# Load the image
+
+  gzip -d pyro_debit_service_v1.tar.gz
+docker load -i pyro_debit_service_v1.tar
+
+# Make sure your .env and docker-compose.yml are here
+ls -la
+
+# Start the service
+docker compose up -d
+
+# Verify
+docker compose ps
+docker compose logs -f pyro-debit-service

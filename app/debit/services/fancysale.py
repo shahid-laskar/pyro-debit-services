@@ -1,30 +1,3 @@
-"""
-app/debit/services/fancysale.py
---------------------------------
-FancySaleAdapter — reads from Oracle CAF_ADMIN.VANITYSALE_FRANCH_DATA_LASKAR and
-drives the wallet-debit flow through Pyro /erp-stock-api/service-wallet-adjustment.
-
-MPIN decryption strategy
-------------------------
-The MPIN column is encrypted at rest using Oracle's own symmetric cipher via the
-database function CAF_ADMIN.F_DECRYPT.  We therefore decrypt at query time:
-
-    CAF_ADMIN.F_DECRYPT(MPIN) AS plain_mpin
-
-in the SELECT — the result is already plain text by the time Python sees it.
-We do NOT call the Python decrypt() function for MPIN; fancysale_secret_key is
-only used by the Pyro HTTP client to encrypt the request body.
-
-State machine (CAF_ENTRY_DONE)
--------------------------------
-  N   → P  : fetch_and_claim()
-  QM  → P  : fetch_and_claim() — MPIN corrected by Sanchar Mitra
-  QB  → P  : fetch_and_claim() — balance topped up by Sanchar Mitra
-  P   → Y  : mark_success()
-  P   → R  : mark_failed()
-  P   → N  : reset_stuck_processing() — scheduler cleanup job
-"""
-
 import logging
 from typing import List
 
@@ -45,8 +18,7 @@ FETCH_ELIGIBLE = (VS_STATUS_N, VS_STATUS_QM, VS_STATUS_QB)
 
 
 class FancySaleAdapter:
-    """Full implementation of DebitServiceAdapter for FancySale."""
-
+    
     service_type  = "FANCYSALE"
     implemented   = True
 
@@ -67,29 +39,7 @@ class FancySaleAdapter:
     # ── Interface implementation ───────────────────────────────────────────────
 
     def fetch_and_claim(self, batch_size: int) -> List[dict]:
-        """
-        Selects and claims eligible rows in two SQL steps.
-
-        VANITYSALE_FRANCH_DATA_LASKAR is a view and contains the Oracle function
-        call F_DECRYPT(MPIN), which makes FOR UPDATE SKIP LOCKED illegal
-        (ORA-02014).  Instead we use an optimistic UPDATE-as-lock pattern:
-
-        Step 1 — SELECT the n oldest eligible rows (no locking clause).
-          • Wrapped in a subquery so ORDER BY applies before ROWNUM, giving the
-            true n oldest rows (bare ROWNUM + ORDER BY would not be ordered).
-
-        Step 2 — For each candidate, UPDATE … WHERE REFID = ? AND
-            CAF_ENTRY_DONE IN ('N','QM','QB').
-          • If another worker already claimed the row, rowcount == 0 and we
-            simply skip it.  Only rows where rowcount == 1 are truly ours.
-          • The per-row check replaces the FOR UPDATE lock guarantee at the cost
-            of one extra round-trip per race (rare in practice with a single
-            scheduler instance).
-
-        MPIN is decrypted inside Oracle by CAF_ADMIN.F_DECRYPT so Python
-        receives plain text in the 'plain_mpin' column — no Python decrypt
-        needed here.
-        """
+        
         if not self.enabled:
             return []
 
@@ -157,13 +107,7 @@ class FancySaleAdapter:
         return claimed
 
     def map_to_pyro_params(self, record: dict) -> dict:
-        """
-        Map Oracle row → wallet_adjustment() kwargs.
-
-        MPIN comes in as plain_mpin (already decrypted by Oracle F_DECRYPT).
-        Validates MPIN length against MPIN_LENGTH column.
-        Raises ValueError on any validation failure — processor catches this.
-        """
+        
         mpin = record.get("plain_mpin") or ""
         mpin = str(mpin).strip()
         expected_len = int(record.get("mpin_length") or 0)

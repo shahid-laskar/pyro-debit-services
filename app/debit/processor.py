@@ -1,17 +1,3 @@
-"""
-app/debit/processor.py
-----------------------
-Generic debit batch processor.  Works with any DebitServiceAdapter — adding
-SimSwap or ESIM later requires zero changes here.
-
-Flow per record:
-  1. map_to_pyro_params()  — may raise ValueError (MPIN error)
-  2. wallet_adjustment()   — HTTP POST to Pyro
-  3. mark_success() / mark_failed() — Oracle writeback
-
-All Oracle writes are non-fatal (logged but never re-raised).
-"""
-
 import asyncio
 import logging
 
@@ -23,10 +9,7 @@ logger = logging.getLogger(__name__)
 
 
 async def run_debit_batch(adapter: DebitServiceAdapter) -> dict:
-    """
-    Main processing loop for one debit service.
-    Called by the scheduler and by POST /admin/trigger-debit/{service_type}.
-    """
+    
     svc = adapter.service_type
 
     if not adapter.enabled:

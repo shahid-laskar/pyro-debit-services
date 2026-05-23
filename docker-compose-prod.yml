@@ -1,8 +1,8 @@
 services:
 
-  debit-service:
-    image: debit_service:v2
-    container_name: debit_service
+  pyro-debit-service:
+    image: debit_service:v1
+    container_name: pyro_debit_service
     restart: unless-stopped
 
     env_file:

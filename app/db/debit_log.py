@@ -1,15 +1,3 @@
-"""
-app/db/debit_log.py
--------------------
-Audit-log writes for all debit services (FANCYSALE / SIMSWAP / ESIM).
-
-Kept entirely separate from app/db/postgres.py which owns the FRC tables.
-Uses the same ThreadedConnectionPool from app/db/postgres.py (shared Postgres
-credentials, different table).
-
-All functions are non-fatal: exceptions are logged, never re-raised.
-"""
-
 import asyncio
 import json
 import logging
@@ -24,7 +12,6 @@ logger = logging.getLogger(__name__)
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _mask_debit_body(body: dict) -> str:
-    """Mask MPIN before persisting request body to log."""
     masked = body.copy()
     if "mpin" in masked:
         masked["mpin"] = "***"
@@ -95,8 +82,6 @@ def insert_debit_txn_log(
             service_type, oracle_ref_id, api_stage, exc
         )
 
-
-# ── Async wrapper ──────────────────────────────────────────────────────────────
 
 async def async_insert_debit_txn_log(**kwargs) -> None:
     """Fire-and-forget async wrapper — log failures are non-fatal."""

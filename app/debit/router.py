@@ -1,9 +1,5 @@
 """
 
-app/debit/router.py
--------------------
-FastAPI admin endpoints for all debit services.
-
 Endpoints
 ─────────
 GET  /debit/status                          — token status for all 3 debit TMs
@@ -28,7 +24,7 @@ router = APIRouter()
 
 @router.get("/debit/status", tags=["Debit"])
 async def debit_status():
-    """Token status for all three debit service token managers."""
+    
     from app.debit.services.registry import SERVICE_REGISTRY
 
     now = datetime.now(timezone.utc).timestamp()
@@ -60,7 +56,7 @@ async def debit_status():
     dependencies=[Depends(require_admin_api_key)],
 )
 async def trigger_debit(service_type: str):
-    """Manually trigger a debit batch for the named service (e.g. FANCYSALE)."""
+   
     from app.debit.processor import run_debit_batch
     from app.debit.services.registry import get_service
 

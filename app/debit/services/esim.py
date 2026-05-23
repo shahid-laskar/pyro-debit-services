@@ -1,15 +1,3 @@
-"""
-app/debit/services/esim.py
---------------------------
-ESIM debit adapter — STUB.  Not yet implemented.
-
-Set ESIM_ENABLED=true in .env only after:
-  1. Oracle table DDL and column mapping are confirmed with the team.
-  2. NotImplementedError bodies below are replaced with real logic.
-
-fetch_and_claim() returns [] when disabled so the scheduler job is harmless.
-"""
-
 import logging
 from typing import List
 

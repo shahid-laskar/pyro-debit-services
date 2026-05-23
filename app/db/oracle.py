@@ -1,10 +1,3 @@
-"""
-app/db/oracle.py
-----------------
-Oracle cx_Oracle connection pool — used by debit service adapters
-(FancySale / SimSwap / ESIM) to read/write their respective CAF tables.
-"""
-
 import logging
 from contextlib import contextmanager
 from typing import Generator, Optional

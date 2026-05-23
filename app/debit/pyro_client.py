@@ -1,24 +1,3 @@
-"""
-app/debit/pyro_client.py
-------------------------
-Async HTTP client for Pyro /erp-stock-api/service-wallet-adjustment.
-
-Key differences from the FRC recharge client (app/pyro_client.py):
-  ─────────────────────────────────────────────────────────────────
-  Aspect          FRC recharge           FancySale/Debit
-  ─────────────────────────────────────────────────────────────────
-  Endpoint        /epin-vendor-api/      /erp-stock-api/
-                  recharge               service-wallet-adjustment
-  Action token    Required (single-use)  NOT required
-  Success code    2002 → callback later  200 (immediate, final)
-  Request fields  dealerMsisdn …         sourceMsisdn, serviceType …
-  Encryption      Request body only      Request body only (same 3DES)
-  Secret key      settings.pyro_*        token_manager.secret_key
-  ─────────────────────────────────────────────────────────────────
-
-Never reads settings.pyro_secret_key; uses token_manager.secret_key throughout.
-"""
-
 import json
 import logging
 from datetime import datetime, timezone
@@ -39,11 +18,7 @@ DEBIT_ENDPOINT_PATH  = "/erp-stock-api/service-wallet-adjustment"
 
 def _parse_pyro_response(resp: httpx.Response, label: str,
                           secret_key: str) -> dict:
-    """
-    Try plain JSON first (Pyro returns plain JSON in current env).
-    Fall back to 3DES decrypt if plain-JSON parse fails.
-    secret_key is the per-service key, NOT the FRC key.
-    """
+   
     raw = resp.text.strip()
     logger.debug("%s raw response: %s", label, raw[:300])
 
@@ -81,12 +56,7 @@ async def wallet_adjustment(
 
     attempt_no:     int = 1,
 ) -> dict:
-    """
-    POST /erp-stock-api/service-wallet-adjustment
-
-    Returns the parsed Pyro response dict (success code 200).
-    Never raises — all exceptions are caught, logged, and returned as error dict.
-    """
+    
     url        = f"{settings.pyro_base_url}{DEBIT_ENDPOINT_PATH}"
     started_at = datetime.now(timezone.utc)
     label      = f"DEBIT [{service_type}] ref={oracle_ref_id}"

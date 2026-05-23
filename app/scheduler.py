@@ -1,15 +1,3 @@
-"""
-app/scheduler.py
-----------------
-APScheduler jobs for FancySale / SimSwap / ESIM debit services.
-
-Jobs
-────
-  debit_<svc_type>      — one IntervalTrigger per service in SERVICE_REGISTRY
-  stuck_cleanup         — every 15 min; resets stuck-P Oracle rows for enabled debit services
-  debit_daily_auth      — 00:10 daily; re-authenticates all debit token managers
-"""
-
 import asyncio
 import logging
 from datetime import datetime, timezone
@@ -27,7 +15,7 @@ scheduler = AsyncIOScheduler()
 # ── Debit jobs ─────────────────────────────────────────────────────────────────
 
 async def _debit_job(service_type: str):
-    """Generic debit job — delegates entirely to the adapter for service_type."""
+    
     try:
         from app.debit.services.registry import SERVICE_REGISTRY
         from app.debit.processor import run_debit_batch
@@ -48,11 +36,7 @@ async def _debit_job(service_type: str):
 
 
 async def _stuck_cleanup_job():
-    """
-    Reset stuck-P Oracle records for all enabled debit services.
-    Each service uses its own adapter.stuck_minutes threshold.
-    Runs every 15 minutes.
-    """
+   
     try:
         from app.debit.services.registry import get_enabled_services
         for adapter in get_enabled_services():

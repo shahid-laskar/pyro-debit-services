@@ -1,14 +1,3 @@
-"""
-app/debit/token_managers.py
----------------------------
-One PyroAuthService instance per debit service.
-All three are authenticated at startup regardless of `enabled` flag so that
-credentials are validated early and logs are clean.
-
-Import the individual names or ALL_DEBIT_TOKEN_MANAGERS list from here.
-Do NOT import from app.auth.token_manager — that module owns the FRC singleton.
-"""
-
 from app.auth.token_manager import PyroAuthService
 from app.config import settings
 

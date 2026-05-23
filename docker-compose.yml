@@ -1,10 +1,10 @@
 services:
 
-  debit-service:
+  pyro-debit-service:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: debit_service
+    container_name: pyro_debit_service
     restart: unless-stopped
 
     env_file:
