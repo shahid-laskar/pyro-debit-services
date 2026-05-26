@@ -1,14 +1,70 @@
+"""
+app/debit/services/simswap.py
+------------------------------
+SimswapAdapter — reads SIMSWAP rows from Oracle
+CAF_ADMIN.SIMSWAP_AMOUNT_DEDUCT_REQUESTS_LASKAR and drives the wallet-debit flow
+through Pyro /erp-stock-api/service-wallet-adjustment.
+
+MPIN decryption strategy
+------------------------
+The MPIN column is encrypted at rest using Oracle's own symmetric cipher via
+the database function CAF_ADMIN.F_DECRYPT.  We decrypt at query time:
+
+    CAF_ADMIN.F_DECRYPT(MPIN) AS plain_mpin
+
+so Python receives plain text — no Python-side decrypt() call for MPIN.
+The simswap_secret_key is only used by the Pyro HTTP client to encrypt the
+request body.
+
+State machine (AMOUNT_DEDUCT_FLAG)
+------------------------------------
+  N   → P  : fetch_and_claim()
+  QM  → P  : fetch_and_claim() — MPIN corrected by Sanchar Mitra
+  QB  → P  : fetch_and_claim() — balance topped up by Sanchar Mitra
+  P   → Y  : mark_success()    — also updates CAF_ADMIN.BCD
+  P   → R  : mark_failed()
+  P   → N  : reset_stuck_processing() — scheduler cleanup job
+
+Secondary update on success
+----------------------------
+After a successful Pyro debit, mark_success() additionally updates
+CAF_ADMIN.BCD, setting ACTIVATION_STATUS from 'IF' to 'AI' for the
+subscriber identified by GSMNUMBER.
+
+  • Primary writeback (→ Y) is committed first, independently.
+  • Secondary update (BCD) is committed in a separate connection.
+  • If the secondary update fails (DB error)  → ERROR log, manual fix needed.
+  • If the secondary update matches 0 rows    → WARNING log only (may already
+    be 'AI' or GSMNUMBER absent from BCD).
+
+The primary record is never reverted on secondary failure — the debit
+already succeeded and Pyro cannot be rolled back.
+"""
+
 import logging
 from typing import List
 
 from app.auth.token_manager import PyroAuthService
+from app.db.oracle import get_oracle_conn
 
 logger = logging.getLogger(__name__)
 
+# ── Oracle state constants ─────────────────────────────────────────────────────
+_STATUS_N  = "N"       # new / eligible
+_STATUS_P  = "P"       # processing (set by us)
+_STATUS_Y  = "Y"       # success    (set by us)
+_STATUS_R  = "R"       # rejected   (set by us on Pyro failure)
+_STATUS_QM = "QM"      # MPIN error — Sanchar Mitra sets; we re-pick after fix
+_STATUS_QB = "QB"      # balance error — Sanchar Mitra sets; we re-pick after top-up
+
+_MODULE_TYPE = "SIMSWAP"
+
 
 class SimswapAdapter:
+    """Full implementation of DebitServiceAdapter for SimSwap."""
+
     service_type = "SIMSWAP"
-    implemented = False
+    implemented  = True
 
     def __init__(
         self,
@@ -24,43 +80,290 @@ class SimswapAdapter:
         self.interval_minutes = interval_minutes
         self.stuck_minutes    = stuck_minutes
 
-        if enabled:
-            logger.warning(
-                "[SIMSWAP] Adapter enabled but not yet implemented. "
-                "Set SIMSWAP_ENABLED=false until implementation is complete."
-            )
+    # ── Interface implementation ───────────────────────────────────────────────
 
     def fetch_and_claim(self, batch_size: int) -> List[dict]:
+        """
+        Selects and claims eligible SIMSWAP rows in two SQL steps.
+
+        Uses the same optimistic UPDATE-as-lock pattern as FancySaleAdapter:
+
+        Step 1 — SELECT the n oldest eligible SIMSWAP rows.
+          • Wrapped in a subquery so ORDER BY applies before ROWNUM, giving
+            the true n oldest rows.
+          • MPIN is decrypted inside Oracle by CAF_ADMIN.F_DECRYPT so Python
+            receives plain text — no Python decrypt() needed.
+
+        Step 2 — For each candidate, UPDATE … WHERE ID = ? AND
+            AMOUNT_DEDUCT_FLAG IN ('N','QM','QB') AND MODULE_TYPE = 'SIMSWAP'.
+          • The MODULE_TYPE guard in the claim prevents a race between the
+            SimSwap and ESIM schedulers (they share the same table).
+          • rowcount == 0 means another worker claimed the row; skip silently.
+        """
         if not self.enabled:
             return []
-        raise NotImplementedError(
-            "SimswapAdapter.fetch_and_claim not yet implemented — "
-            "set SIMSWAP_ENABLED=false"
-        )
+
+        select_sql = """
+            SELECT *
+            FROM (
+                SELECT
+                    ID,
+                    REFID,
+                    CTOPUPNO,
+                    GSMNUMBER,
+                    SIMNUMBER,
+                    AMOUNT,
+                    CAF_ADMIN.F_DECRYPT(MPIN) AS plain_mpin,
+                    MPIN_LENGTH,
+                    SS_REQUEST_ID,
+                    MODULE_TYPE,
+                    REQUEST_DATE,
+                    AMOUNT_DEDUCT_FLAG,
+                    CIRCLE_CODE,
+                    DEALERCODE,
+                    SWAP_TYPE,
+                    SOURCE
+                FROM CAF_ADMIN.SIMSWAP_AMOUNT_DEDUCT_REQUESTS_LASKAR
+                WHERE AMOUNT_DEDUCT_FLAG IN ('N', 'QM', 'QB')
+                  AND MODULE_TYPE         = 'SIMSWAP'
+                ORDER BY REQUEST_DATE ASC
+            )
+            WHERE ROWNUM <= :batch_size
+        """
+
+        # Re-check eligibility and MODULE_TYPE to guard against concurrent
+        # claims from the ESIM scheduler or a parallel restart.
+        claim_sql = """
+            UPDATE CAF_ADMIN.SIMSWAP_AMOUNT_DEDUCT_REQUESTS_LASKAR
+            SET    AMOUNT_DEDUCT_FLAG    = 'P',
+                   AMOUNT_DEDUCT_DATE    = SYSDATE,
+                   AMOUNT_DEDUCT_REMARKS = 'Processing started'
+            WHERE  ID                    = :id
+              AND  AMOUNT_DEDUCT_FLAG    IN ('N', 'QM', 'QB')
+              AND  MODULE_TYPE           = 'SIMSWAP'
+        """
+
+        with get_oracle_conn() as conn:
+            cur = conn.cursor()
+
+            cur.execute(select_sql, batch_size=batch_size)
+            cols       = [c[0].lower() for c in cur.description]
+            candidates = [dict(zip(cols, row)) for row in cur.fetchall()]
+
+            if not candidates:
+                return []
+
+            claimed = []
+            for row in candidates:
+                cur.execute(claim_sql, {"id": row["id"]})
+                if cur.rowcount == 1:
+                    claimed.append(row)
+
+            conn.commit()
+
+        lost = len(candidates) - len(claimed)
+        if lost:
+            logger.warning(
+                "[SIMSWAP] fetch_and_claim: %d candidate(s) found, %d claimed "
+                "(%d lost to concurrent worker)",
+                len(candidates), len(claimed), lost,
+            )
+        else:
+            logger.info("[SIMSWAP] fetch_and_claim: %d row(s) claimed", len(claimed))
+
+        return claimed
 
     def map_to_pyro_params(self, record: dict) -> dict:
-        raise NotImplementedError(
-            "SimswapAdapter.map_to_pyro_params not yet implemented"
+        """
+        Map an Oracle row → wallet_adjustment() kwargs.
+
+        MPIN arrives as plain_mpin (already decrypted by Oracle F_DECRYPT).
+        Validates length against MPIN_LENGTH column.
+        Raises ValueError on any validation failure — processor catches this,
+        marks the record failed, and writes to the audit log without calling Pyro.
+        """
+        record_id = record.get("id", "UNKNOWN")
+
+        mpin         = str(record.get("plain_mpin") or "").strip()
+        expected_len = int(record.get("mpin_length") or 0)
+
+        if not mpin:
+            raise ValueError(
+                f"ID={record_id}: plain_mpin is empty after Oracle F_DECRYPT"
+            )
+        if expected_len and len(mpin) != expected_len:
+            raise ValueError(
+                f"ID={record_id}: MPIN length mismatch — "
+                f"got {len(mpin)}, expected {expected_len}"
+            )
+
+        raw_ctopupno = record.get("ctopupno")
+        gsmnumber    = record.get("gsmnumber")
+        if raw_ctopupno is None:
+            raise ValueError(f"ID={record_id}: CTOPUPNO is NULL in Oracle")
+        if not gsmnumber:
+            raise ValueError(f"ID={record_id}: GSMNUMBER is NULL/empty in Oracle")
+
+        source_msisdn = str(int(raw_ctopupno))
+        dest_msisdn   = str(gsmnumber).strip()
+        amount        = float(record["amount"])
+        client_id     = str(record["ss_request_id"])
+        remarks       = str(record.get("module_type") or _MODULE_TYPE)
+
+        return dict(
+            client_id=client_id,
+            source_msisdn=source_msisdn,
+            dest_msisdn=dest_msisdn,
+            amount=amount,
+            mpin=mpin,
+            remarks=remarks,
         )
 
     def get_record_ref(self, record: dict) -> str:
-        raise NotImplementedError(
-            "SimswapAdapter.get_record_ref not yet implemented"
-        )
+        """Use the identity PK (ID) as the canonical log reference."""
+        return str(record.get("id", "UNKNOWN"))
 
     def mark_success(self, record: dict, pyro_txn_id: str, remarks: str) -> None:
-        raise NotImplementedError(
-            "SimswapAdapter.mark_success not yet implemented"
-        )
+        """
+        Two-phase Oracle writeback on Pyro success.
+
+        Phase 1 — Primary: flip AMOUNT_DEDUCT_FLAG → Y, store TRANSACTION_ID,
+                  AMOUNT_DEDUCT_DATE, and AMOUNT_DEDUCT_REMARKS.  Committed
+                  independently so a secondary failure never rolls it back.
+
+        Phase 2 — Secondary: set ACTIVATION_STATUS = 'AI' in CAF_ADMIN.BCD
+                  for the subscriber's GSMNUMBER.
+                    • rowcount == 0  → WARNING (row absent or already 'AI').
+                    • DB exception   → ERROR with GSMNUMBER for manual fix.
+        """
+        record_id = record["id"]
+        gsmnumber = str(record.get("gsmnumber") or "").strip()
+
+        # ── Phase 1: primary writeback ────────────────────────────────────────
+        primary_sql = """
+            UPDATE CAF_ADMIN.SIMSWAP_AMOUNT_DEDUCT_REQUESTS_LASKAR
+            SET    AMOUNT_DEDUCT_FLAG    = 'Y',
+                   TRANSACTION_ID        = :pyro_txn_id,
+                   AMOUNT_DEDUCT_DATE    = SYSDATE,
+                   AMOUNT_DEDUCT_REMARKS = :remarks
+            WHERE  ID                    = :id
+              AND  AMOUNT_DEDUCT_FLAG    = 'P'
+        """
+        try:
+            with get_oracle_conn() as conn:
+                cur = conn.cursor()
+                cur.execute(primary_sql, {
+                    "pyro_txn_id": (pyro_txn_id or "")[:50],
+                    "remarks":     remarks[:200],
+                    "id":          record_id,
+                })
+                if cur.rowcount == 0:
+                    logger.warning(
+                        "[SIMSWAP] mark_success: ID=%s rowcount=0 "
+                        "(already moved out of P?)", record_id
+                    )
+                conn.commit()
+        except Exception as exc:
+            logger.error(
+                "[SIMSWAP] mark_success primary DB failure (non-fatal) ID=%s: %s",
+                record_id, exc,
+            )
+            return  # Secondary update only makes sense if primary succeeded
+
+        # ── Phase 2: secondary writeback — CAF_ADMIN.BCD ─────────────────────
+        secondary_sql = """
+            UPDATE CAF_ADMIN.BCD_LASKAR
+            SET    ACTIVATION_STATUS = 'AI'
+            WHERE  GSMNUMBER         = :gsmnumber
+              AND  ACTIVATION_STATUS = 'IF'
+        """
+        try:
+            with get_oracle_conn() as conn:
+                cur = conn.cursor()
+                cur.execute(secondary_sql, {"gsmnumber": gsmnumber})
+                if cur.rowcount == 0:
+                    logger.warning(
+                        "[SIMSWAP] mark_success secondary (BCD): no row updated for "
+                        "GSMNUMBER=%s — row may be absent or ACTIVATION_STATUS != 'IF'. "
+                        "Primary record ID=%s already marked Y. Check BCD manually if needed.",
+                        gsmnumber, record_id,
+                    )
+                else:
+                    logger.info(
+                        "[SIMSWAP] mark_success secondary (BCD): "
+                        "ACTIVATION_STATUS set to AI for GSMNUMBER=%s (ID=%s)",
+                        gsmnumber, record_id,
+                    )
+                conn.commit()
+        except Exception as exc:
+            logger.error(
+                "[SIMSWAP] mark_success secondary (BCD) DB failure — "
+                "MANUAL FIX REQUIRED: set CAF_ADMIN.BCD.ACTIVATION_STATUS = 'AI' "
+                "WHERE GSMNUMBER = '%s'. Primary record ID=%s is already Y. Error: %s",
+                gsmnumber, record_id, exc,
+            )
 
     def mark_failed(self, record: dict, remarks: str) -> None:
-        raise NotImplementedError(
-            "SimswapAdapter.mark_failed not yet implemented"
-        )
+        """Flip AMOUNT_DEDUCT_FLAG → R and record AMOUNT_DEDUCT_REMARKS."""
+        sql = """
+            UPDATE CAF_ADMIN.SIMSWAP_AMOUNT_DEDUCT_REQUESTS_LASKAR
+            SET    AMOUNT_DEDUCT_FLAG    = 'R',
+                   AMOUNT_DEDUCT_DATE    = SYSDATE,
+                   AMOUNT_DEDUCT_REMARKS = :remarks
+            WHERE  ID                    = :id
+              AND  AMOUNT_DEDUCT_FLAG    = 'P'
+        """
+        try:
+            with get_oracle_conn() as conn:
+                cur = conn.cursor()
+                cur.execute(sql, {
+                    "remarks": remarks[:200],
+                    "id":      record["id"],
+                })
+                if cur.rowcount == 0:
+                    logger.warning(
+                        "[SIMSWAP] mark_failed: ID=%s rowcount=0 "
+                        "(already moved out of P?)", record["id"]
+                    )
+                conn.commit()
+        except Exception as exc:
+            logger.error(
+                "[SIMSWAP] mark_failed DB failure (non-fatal) ID=%s: %s",
+                record["id"], exc,
+            )
 
     def reset_stuck_processing(self, stuck_minutes: int) -> int:
+        """
+        Reset SIMSWAP rows stuck in P longer than stuck_minutes back to N.
+
+        Rows where AMOUNT_DEDUCT_DATE IS NULL are excluded — these pre-date
+        this service and should be handled manually before first deployment.
+        MODULE_TYPE = 'SIMSWAP' guard ensures ESIM rows are never touched.
+        """
         if not self.enabled:
             return 0
-        raise NotImplementedError(
-            "SimswapAdapter.reset_stuck_processing not yet implemented"
-        )
+
+        sql = """
+            UPDATE CAF_ADMIN.SIMSWAP_AMOUNT_DEDUCT_REQUESTS_LASKAR
+            SET    AMOUNT_DEDUCT_FLAG    = 'N',
+                   AMOUNT_DEDUCT_REMARKS = 'Reset: stuck in processing state'
+            WHERE  AMOUNT_DEDUCT_FLAG    = 'P'
+              AND  MODULE_TYPE           = 'SIMSWAP'
+              AND  AMOUNT_DEDUCT_DATE   IS NOT NULL
+              AND  AMOUNT_DEDUCT_DATE    < SYSDATE - (:stuck_minutes / 1440)
+        """
+        try:
+            with get_oracle_conn() as conn:
+                cur = conn.cursor()
+                cur.execute(sql, {"stuck_minutes": stuck_minutes})
+                count = cur.rowcount
+                conn.commit()
+            if count:
+                logger.warning(
+                    "[SIMSWAP] reset_stuck_processing: reset %d stuck-P row(s) "
+                    "older than %d min back to N", count, stuck_minutes,
+                )
+            return count
+        except Exception as exc:
+            logger.error("[SIMSWAP] reset_stuck_processing error: %s", exc)
+            return 0
