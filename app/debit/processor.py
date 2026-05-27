@@ -77,7 +77,7 @@ async def run_debit_batch(adapter: DebitServiceAdapter) -> dict:
         data = response.get("data", {})
 
         # ── 4. Handle outcome ─────────────────────────────────────────────────
-        if sc == DEBIT_SUCCESS_CODE and response.get("status") == "SUCCESS":
+        if sc in DEBIT_SUCCESS_CODE and response.get("status") == "SUCCESS":
             pyro_txn_id = str(data.get("pyroId", ""))
             bal_before  = data.get("balanceBefore", 0.0)
             bal_after   = data.get("balanceAfter",  0.0)

@@ -123,9 +123,9 @@ class EsimAdapter:
                     DEALERCODE,
                     SWAP_TYPE,
                     SOURCE
-                FROM CAF_ADMIN.SIMSWAP_AMOUNT_DEDUCT_REQUESTS_LASKAR
+                FROM CAF_ADMIN.SIMSWAP_AMOUNT_DEDUCT_REQUESTS
                 WHERE AMOUNT_DEDUCT_FLAG IN ('N', 'QM', 'QB')
-                  AND MODULE_TYPE         = 'ESIM'
+                  AND MODULE_TYPE         = 'ESIM'                 
                 ORDER BY REQUEST_DATE ASC
             )
             WHERE ROWNUM <= :batch_size
@@ -134,7 +134,7 @@ class EsimAdapter:
         # Re-check eligibility and MODULE_TYPE to guard against concurrent
         # claims from the SimSwap scheduler or a parallel restart.
         claim_sql = """
-            UPDATE CAF_ADMIN.SIMSWAP_AMOUNT_DEDUCT_REQUESTS_LASKAR
+            UPDATE CAF_ADMIN.SIMSWAP_AMOUNT_DEDUCT_REQUESTS
             SET    AMOUNT_DEDUCT_FLAG    = 'P',
                    AMOUNT_DEDUCT_DATE    = SYSDATE,
                    AMOUNT_DEDUCT_REMARKS = 'Processing started'
@@ -241,7 +241,7 @@ class EsimAdapter:
 
         # ── Phase 1: primary writeback ────────────────────────────────────────
         primary_sql = """
-            UPDATE CAF_ADMIN.SIMSWAP_AMOUNT_DEDUCT_REQUESTS_LASKAR
+            UPDATE CAF_ADMIN.SIMSWAP_AMOUNT_DEDUCT_REQUESTS
             SET    AMOUNT_DEDUCT_FLAG    = 'Y',
                    TRANSACTION_ID        = :pyro_txn_id,
                    AMOUNT_DEDUCT_DATE    = SYSDATE,
@@ -272,7 +272,7 @@ class EsimAdapter:
 
         # ── Phase 2: secondary writeback — CAF_ADMIN.SIM_SWAP_DATA ───────────
         secondary_sql = """
-            UPDATE CAF_ADMIN.SIM_SWAP_DATA_LASKAR
+            UPDATE CAF_ADMIN.SIM_SWAP_DATA
             SET    ACTIVATION_STATUS = 'AI'
             WHERE  GSMNUMBER         = :gsmnumber
               AND  ACTIVATION_STATUS = 'IF'
@@ -306,7 +306,7 @@ class EsimAdapter:
     def mark_failed(self, record: dict, remarks: str) -> None:
         """Flip AMOUNT_DEDUCT_FLAG → R and record AMOUNT_DEDUCT_REMARKS."""
         sql = """
-            UPDATE CAF_ADMIN.SIMSWAP_AMOUNT_DEDUCT_REQUESTS_LASKAR
+            UPDATE CAF_ADMIN.SIMSWAP_AMOUNT_DEDUCT_REQUESTS
             SET    AMOUNT_DEDUCT_FLAG    = 'R',
                    AMOUNT_DEDUCT_DATE    = SYSDATE,
                    AMOUNT_DEDUCT_REMARKS = :remarks
@@ -344,7 +344,7 @@ class EsimAdapter:
             return 0
 
         sql = """
-            UPDATE CAF_ADMIN.SIMSWAP_AMOUNT_DEDUCT_REQUESTS_LASKAR
+            UPDATE CAF_ADMIN.SIMSWAP_AMOUNT_DEDUCT_REQUESTS
             SET    AMOUNT_DEDUCT_FLAG    = 'N',
                    AMOUNT_DEDUCT_REMARKS = 'Reset: stuck in processing state'
             WHERE  AMOUNT_DEDUCT_FLAG    = 'P'

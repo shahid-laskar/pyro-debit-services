@@ -1,7 +1,7 @@
 import logging
 from contextlib import contextmanager
 from typing import Generator, Optional
-
+import functools
 import psycopg2
 import psycopg2.pool
 
@@ -9,6 +9,19 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+def _pg_retry(fn):
+   
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except psycopg2.OperationalError as exc:
+            logger.warning(
+                "Postgres: %s failed with OperationalError (%s) — retrying once",
+                fn.__name__, exc,
+            )
+            return fn(*args, **kwargs)
+    return wrapper
 
 _pool: Optional[psycopg2.pool.ThreadedConnectionPool] = None
 

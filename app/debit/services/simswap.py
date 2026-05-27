@@ -2,7 +2,7 @@
 app/debit/services/simswap.py
 ------------------------------
 SimswapAdapter — reads SIMSWAP rows from Oracle
-CAF_ADMIN.SIMSWAP_AMOUNT_DEDUCT_REQUESTS_LASKAR and drives the wallet-debit flow
+CAF_ADMIN.SIMSWAP_AMOUNT_DEDUCT_REQUESTS and drives the wallet-debit flow
 through Pyro /erp-stock-api/service-wallet-adjustment.
 
 MPIN decryption strategy
@@ -123,7 +123,7 @@ class SimswapAdapter:
                     DEALERCODE,
                     SWAP_TYPE,
                     SOURCE
-                FROM CAF_ADMIN.SIMSWAP_AMOUNT_DEDUCT_REQUESTS_LASKAR
+                FROM CAF_ADMIN.SIMSWAP_AMOUNT_DEDUCT_REQUESTS
                 WHERE AMOUNT_DEDUCT_FLAG IN ('N', 'QM', 'QB')
                   AND MODULE_TYPE         = 'SIMSWAP'
                 ORDER BY REQUEST_DATE ASC
@@ -134,7 +134,7 @@ class SimswapAdapter:
         # Re-check eligibility and MODULE_TYPE to guard against concurrent
         # claims from the ESIM scheduler or a parallel restart.
         claim_sql = """
-            UPDATE CAF_ADMIN.SIMSWAP_AMOUNT_DEDUCT_REQUESTS_LASKAR
+            UPDATE CAF_ADMIN.SIMSWAP_AMOUNT_DEDUCT_REQUESTS
             SET    AMOUNT_DEDUCT_FLAG    = 'P',
                    AMOUNT_DEDUCT_DATE    = SYSDATE,
                    AMOUNT_DEDUCT_REMARKS = 'Processing started'
@@ -241,7 +241,7 @@ class SimswapAdapter:
 
         # ── Phase 1: primary writeback ────────────────────────────────────────
         primary_sql = """
-            UPDATE CAF_ADMIN.SIMSWAP_AMOUNT_DEDUCT_REQUESTS_LASKAR
+            UPDATE CAF_ADMIN.SIMSWAP_AMOUNT_DEDUCT_REQUESTS
             SET    AMOUNT_DEDUCT_FLAG    = 'Y',
                    TRANSACTION_ID        = :pyro_txn_id,
                    AMOUNT_DEDUCT_DATE    = SYSDATE,
@@ -306,7 +306,7 @@ class SimswapAdapter:
     def mark_failed(self, record: dict, remarks: str) -> None:
         """Flip AMOUNT_DEDUCT_FLAG → R and record AMOUNT_DEDUCT_REMARKS."""
         sql = """
-            UPDATE CAF_ADMIN.SIMSWAP_AMOUNT_DEDUCT_REQUESTS_LASKAR
+            UPDATE CAF_ADMIN.SIMSWAP_AMOUNT_DEDUCT_REQUESTS
             SET    AMOUNT_DEDUCT_FLAG    = 'R',
                    AMOUNT_DEDUCT_DATE    = SYSDATE,
                    AMOUNT_DEDUCT_REMARKS = :remarks
@@ -344,7 +344,7 @@ class SimswapAdapter:
             return 0
 
         sql = """
-            UPDATE CAF_ADMIN.SIMSWAP_AMOUNT_DEDUCT_REQUESTS_LASKAR
+            UPDATE CAF_ADMIN.SIMSWAP_AMOUNT_DEDUCT_REQUESTS
             SET    AMOUNT_DEDUCT_FLAG    = 'N',
                    AMOUNT_DEDUCT_REMARKS = 'Reset: stuck in processing state'
             WHERE  AMOUNT_DEDUCT_FLAG    = 'P'

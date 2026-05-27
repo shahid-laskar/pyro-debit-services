@@ -4,7 +4,7 @@ import logging
 from datetime import datetime
 from typing import Optional
 
-from app.db.postgres import get_pg_conn     # reuse the existing pool
+from app.db.postgres import get_pg_conn, _pg_retry     # reuse the existing pool
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,32 @@ def _mask_debit_body(body: dict) -> str:
 
 
 # ── Sync insert ────────────────────────────────────────────────────────────────
-
+@_pg_retry                          # retries once on OperationalError
+def _do_insert_debit_txn_log(values: tuple) -> None:
+    """Inner insert — allowed to raise so _pg_retry can catch and retry."""
+    sql = """
+        INSERT INTO public.debit_txn_log (
+            service_type, oracle_ref_id, client_id,
+            source_msisdn, dest_msisdn, amount,
+            api_stage, api_endpoint, attempt_no,
+            request_body, response_http_code, response_body,
+            pyro_status_code, pyro_status_text, pyro_txn_id,
+            call_started_at, call_ended_at, duration_ms,
+            is_success, is_perm_failure, error_class, error_detail
+        ) VALUES (
+            %s, %s, %s,
+            %s, %s, %s,
+            %s, %s, %s,
+            %s, %s, %s,
+            %s, %s, %s,
+            %s, %s, %s,
+            %s, %s, %s, %s
+        )
+    """
+    with get_pg_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, values)
+            
 def insert_debit_txn_log(
     service_type:       str,
     oracle_ref_id:      Optional[str],
@@ -44,38 +69,16 @@ def insert_debit_txn_log(
     error_class:        Optional[str] = None,
     error_detail:       Optional[str] = None,
 ) -> None:
-    sql = """
-        INSERT INTO public.debit_txn_log (
-            service_type, oracle_ref_id, client_id,
-            source_msisdn, dest_msisdn, amount,
-            api_stage, api_endpoint, attempt_no,
-            request_body, response_http_code, response_body,
-            pyro_status_code, pyro_status_text, pyro_txn_id,
-            call_started_at, call_ended_at, duration_ms,
-            is_success, is_perm_failure, error_class, error_detail
-        ) VALUES (
-            %s, %s, %s,
-            %s, %s, %s,
-            %s, %s, %s,
-            %s, %s, %s,
-            %s, %s, %s,
-            %s, %s, %s,
-            %s, %s, %s, %s
-        )
-    """
-
-    try:
-        with get_pg_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (
-                    service_type, oracle_ref_id, client_id,
+    values = (service_type, oracle_ref_id, client_id,
                     source_msisdn, dest_msisdn, amount,
                     api_stage, api_endpoint, attempt_no,
                     request_body, response_http_code, response_body,
                     pyro_status_code, pyro_status_text, pyro_txn_id,
                     call_started_at, call_ended_at, duration_ms,
-                    is_success, is_perm_failure, error_class, error_detail,
-                ))
+                    is_success, is_perm_failure, error_class, error_detail)
+
+    try:
+        _do_insert_debit_txn_log(values)        
     except Exception as exc:
         logger.error(
             "debit_txn_log insert failed service=%s ref=%s stage=%s: %s",
