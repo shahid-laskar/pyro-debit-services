@@ -1,46 +1,3 @@
-"""
-app/debit/services/esim.py
---------------------------
-EsimAdapter — reads ESIM rows from Oracle
-CAF_ADMIN.SIMSWAP_AMOUNT_DEDUCT_REQUESTS and drives the wallet-debit flow
-through Pyro /erp-stock-api/service-wallet-adjustment.
-
-MPIN decryption strategy
-------------------------
-The MPIN column is encrypted at rest using Oracle's own symmetric cipher via
-the database function CAF_ADMIN.F_DECRYPT.  We decrypt at query time:
-
-    CAF_ADMIN.F_DECRYPT(MPIN) AS plain_mpin
-
-so Python receives plain text — no Python-side decrypt() call for MPIN.
-The esim_secret_key is only used by the Pyro HTTP client to encrypt the
-request body.
-
-State machine (AMOUNT_DEDUCT_FLAG)
-------------------------------------
-  N   → P  : fetch_and_claim()
-  QM  → P  : fetch_and_claim() — MPIN corrected by Sanchar Mitra
-  QB  → P  : fetch_and_claim() — balance topped up by Sanchar Mitra
-  P   → Y  : mark_success()    — also updates CAF_ADMIN.SIM_SWAP_DATA
-  P   → R  : mark_failed()
-  P   → N  : reset_stuck_processing() — scheduler cleanup job
-
-Secondary update on success
-----------------------------
-After a successful Pyro debit, mark_success() additionally updates
-CAF_ADMIN.SIM_SWAP_DATA, setting ACTIVATION_STATUS from 'IF' to 'AI' for
-the subscriber identified by GSMNUMBER.
-
-  • Primary writeback (→ Y) is committed first, independently.
-  • Secondary update (SIM_SWAP_DATA) is committed in a separate connection.
-  • If the secondary update fails (DB error)  → ERROR log, manual fix needed.
-  • If the secondary update matches 0 rows    → WARNING log only (may already
-    be 'AI' or GSMNUMBER absent from SIM_SWAP_DATA).
-
-The primary record is never reverted on secondary failure — the debit
-already succeeded and Pyro cannot be rolled back.
-"""
-
 import logging
 from typing import List
 
@@ -60,8 +17,7 @@ _STATUS_QB = "QB"      # balance error — Sanchar Mitra sets; we re-pick after 
 _MODULE_TYPE = "ESIM"
 
 
-class EsimAdapter:
-    """Full implementation of DebitServiceAdapter for ESIM."""
+class EsimAdapter:    
 
     service_type = "ESIM"
     implemented  = True
@@ -83,23 +39,7 @@ class EsimAdapter:
     # ── Interface implementation ───────────────────────────────────────────────
 
     def fetch_and_claim(self, batch_size: int) -> List[dict]:
-        """
-        Selects and claims eligible ESIM rows in two SQL steps.
-
-        Uses the same optimistic UPDATE-as-lock pattern as FancySaleAdapter:
-
-        Step 1 — SELECT the n oldest eligible ESIM rows.
-          • Wrapped in a subquery so ORDER BY applies before ROWNUM, giving
-            the true n oldest rows.
-          • MPIN is decrypted inside Oracle by CAF_ADMIN.F_DECRYPT so Python
-            receives plain text — no Python decrypt() needed.
-
-        Step 2 — For each candidate, UPDATE … WHERE ID = ? AND
-            AMOUNT_DEDUCT_FLAG IN ('N','QM','QB') AND MODULE_TYPE = 'ESIM'.
-          • The MODULE_TYPE guard in the claim prevents a race between the
-            ESIM and SimSwap schedulers (they share the same table).
-          • rowcount == 0 means another worker claimed the row; skip silently.
-        """
+        
         if not self.enabled:
             return []
 
@@ -131,8 +71,6 @@ class EsimAdapter:
             WHERE ROWNUM <= :batch_size
         """
 
-        # Re-check eligibility and MODULE_TYPE to guard against concurrent
-        # claims from the SimSwap scheduler or a parallel restart.
         claim_sql = """
             UPDATE CAF_ADMIN.SIMSWAP_AMOUNT_DEDUCT_REQUESTS
             SET    AMOUNT_DEDUCT_FLAG    = 'P',
@@ -174,14 +112,7 @@ class EsimAdapter:
         return claimed
 
     def map_to_pyro_params(self, record: dict) -> dict:
-        """
-        Map an Oracle row → wallet_adjustment() kwargs.
-
-        MPIN arrives as plain_mpin (already decrypted by Oracle F_DECRYPT).
-        Validates length against MPIN_LENGTH column.
-        Raises ValueError on any validation failure — processor catches this,
-        marks the record failed, and writes to the audit log without calling Pyro.
-        """
+       
         record_id = record.get("id", "UNKNOWN")
 
         mpin         = str(record.get("plain_mpin") or "").strip()
@@ -224,18 +155,7 @@ class EsimAdapter:
         return str(record.get("id", "UNKNOWN"))
 
     def mark_success(self, record: dict, pyro_txn_id: str, remarks: str) -> None:
-        """
-        Two-phase Oracle writeback on Pyro success.
-
-        Phase 1 — Primary: flip AMOUNT_DEDUCT_FLAG → Y, store TRANSACTION_ID,
-                  AMOUNT_DEDUCT_DATE, and AMOUNT_DEDUCT_REMARKS.  Committed
-                  independently so a secondary failure never rolls it back.
-
-        Phase 2 — Secondary: set ACTIVATION_STATUS = 'AI' in
-                  CAF_ADMIN.SIM_SWAP_DATA for the subscriber's GSMNUMBER.
-                    • rowcount == 0  → WARNING (row absent or already 'AI').
-                    • DB exception   → ERROR with GSMNUMBER for manual fix.
-        """
+        
         record_id = record["id"]
         gsmnumber = str(record.get("gsmnumber") or "").strip()
 
@@ -270,7 +190,7 @@ class EsimAdapter:
             )
             return  # Secondary update only makes sense if primary succeeded
 
-        # ── Phase 2: secondary writeback — CAF_ADMIN.SIM_SWAP_DATA ───────────
+        
         secondary_sql = """
             UPDATE CAF_ADMIN.SIM_SWAP_DATA
             SET    ACTIVATION_STATUS = 'AI'
@@ -333,13 +253,7 @@ class EsimAdapter:
             )
 
     def reset_stuck_processing(self, stuck_minutes: int) -> int:
-        """
-        Reset ESIM rows stuck in P longer than stuck_minutes back to N.
-
-        Rows where AMOUNT_DEDUCT_DATE IS NULL are excluded — these pre-date
-        this service and should be handled manually before first deployment.
-        MODULE_TYPE = 'ESIM' guard ensures SimSwap rows are never touched.
-        """
+        
         if not self.enabled:
             return 0
 

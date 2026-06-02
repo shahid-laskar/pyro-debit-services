@@ -43,7 +43,6 @@ class FancySaleAdapter:
         if not self.enabled:
             return []
 
-        # Subquery ensures ORDER BY is applied before ROWNUM slicing.
         select_sql = """
             SELECT *
             FROM (
@@ -60,17 +59,15 @@ class FancySaleAdapter:
                     TRANS_DATE,
                     MODULE_TYPE,
                     CAF_ENTRY_DONE
-                FROM CAF_ADMIN.VANITYSALE_FRANCH_DATA_LASKAR
+                FROM CAF_ADMIN.VANITYSALE_FRANCH_DATA
                 WHERE CAF_ENTRY_DONE IN ('N', 'QM', 'QB')
                 ORDER BY TRANS_DATE ASC
             )
             WHERE ROWNUM <= :batch_size
         """
 
-        # Re-check eligibility in the WHERE clause so a concurrent claim
-        # (rowcount == 0) is detected and the row is silently skipped.
         claim_sql = """
-            UPDATE CAF_ADMIN.VANITYSALE_FRANCH_DATA_LASKAR
+            UPDATE CAF_ADMIN.VANITYSALE_FRANCH_DATA
             SET    CAF_ENTRY_DONE = 'P',
                    CAF_ENTRY_DATE = SYSDATE,
                    PYRO_REMARKS   = 'Processing started'
@@ -149,7 +146,7 @@ class FancySaleAdapter:
     def mark_success(self, record: dict, pyro_txn_id: str, remarks: str) -> None:
         """Write Y + TRANSACTION_ID + PYRO_REMARKS + PROCESSED_SM to Oracle."""
         sql = """
-            UPDATE CAF_ADMIN.VANITYSALE_FRANCH_DATA_LASKAR
+            UPDATE CAF_ADMIN.VANITYSALE_FRANCH_DATA
             SET    CAF_ENTRY_DONE = 'Y',
                    TRANSACTION_ID = :pyro_txn_id,
                    PYRO_REMARKS   = :remarks,
@@ -181,7 +178,7 @@ class FancySaleAdapter:
     def mark_failed(self, record: dict, remarks: str) -> None:
         """Write R + PYRO_REMARKS to Oracle."""
         sql = """
-            UPDATE CAF_ADMIN.VANITYSALE_FRANCH_DATA_LASKAR
+            UPDATE CAF_ADMIN.VANITYSALE_FRANCH_DATA
             SET    CAF_ENTRY_DONE = 'R',
                    PYRO_REMARKS   = :remarks
             WHERE  REFID          = :refid
@@ -208,16 +205,12 @@ class FancySaleAdapter:
 
 
     def reset_stuck_processing(self, stuck_minutes: int) -> int:
-        """
-        Reset P records that have been stuck longer than stuck_minutes back to N.
-        Records pre-dating this service (CAF_ENTRY_DATE IS NULL) are intentionally
-        excluded — run the one-time manual SQL from the deployment guide first.
-        """
+        
         if not self.enabled:
             return 0
 
         sql = """
-            UPDATE CAF_ADMIN.VANITYSALE_FRANCH_DATA_LASKAR
+            UPDATE CAF_ADMIN.VANITYSALE_FRANCH_DATA
             SET    CAF_ENTRY_DONE = 'N',
                    PYRO_REMARKS   = 'Reset: stuck in processing state'
             WHERE  CAF_ENTRY_DONE  = 'P'

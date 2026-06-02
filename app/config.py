@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     fancysale_enabled: bool = True
     fancysale_batch_size: int = 200
     fancysale_interval_minutes: int = 30
-
+    fancysale_stuck_minutes: int = 10
     # ── SimSwap debit credentials (feature off by default) ────────────────────
     simswap_api_key: str = ""
     simswap_login_id: str = ""
@@ -63,12 +63,7 @@ class Settings(BaseSettings):
     esim_batch_size: int = 200
     esim_interval_minutes: int = 30
     esim_stuck_minutes: int = 10
-
-    # ── Stuck-record cleanup thresholds ───────────────────────────────────────
-    # Each service has its own stuck_minutes carried by the adapter (see above).
-    # fancysale_stuck_minutes is kept here for the FancySale adapter.
-    fancysale_stuck_minutes: int = 10
-
+    
     validate_disabled_debit_credentials: bool = False
 
 

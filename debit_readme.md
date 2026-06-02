@@ -116,16 +116,16 @@ You will need to replace the `NotImplementedError` raises with your actual logic
 
 On Windows dev PC:
 bash# Build for linux/amd64 (server architecture)
-docker buildx build --platform linux/amd64 -t pyro_debit_service:v1 .
+docker buildx build --platform linux/amd64 -t pyro_debit_service:v2 .
 # use :latest/v2/etc
 # Build manually with buildx
 
 # Save and compress
-docker save pyro_debit_service:v1 | gzip > pyro_debit_service_v1.tar.gz
+docker save pyro_debit_service:v2 | gzip > pyro_debit_service_v2.tar.gz
 
 # Copy to server (use your server's user and IP)
 
-scp pyro_debit_service_v1.tar.gz m01400120u1@10.201.222.67:/home/m01400120u1/debit_services/
+scp pyro_debit_service_v2.tar.gz m01400120u1@10.201.222.67:/home/m01400120u1/debit_services/
 
 inside server: nano docker-compose.yml paste docker-compose-prod.yml
 

@@ -1,7 +1,7 @@
 services:
 
   pyro-debit-service:
-    image: debit_service:v1
+    image: debit_service:v2
     container_name: pyro_debit_service
     restart: unless-stopped
 

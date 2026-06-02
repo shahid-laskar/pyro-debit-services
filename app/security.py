@@ -19,13 +19,3 @@ async def require_admin_api_key(
             detail="Invalid admin API key",
         )
 
-
-# async def require_callback_secret(
-#     x_callback_secret: str | None = Header(default=None, alias="X-Callback-Secret"),
-# ) -> None:
-#     """Optionally require a shared secret for Pyro callbacks."""
-#     if settings.callback_secret and x_callback_secret != settings.callback_secret:
-#         raise HTTPException(
-#             status_code=status.HTTP_403_FORBIDDEN,
-#             detail="Invalid callback secret",
-#         )
