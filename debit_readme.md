@@ -1,11 +1,14 @@
 # Sanchar Mitra — Debit Service
 
-This is a standalone backend service that processes wallet adjustments (debits) for Sanchar Mitra services via the Pyro API. Currently, it supports **FancySale**, with architecture in place to support **SimSwap** and **ESIM** in the future.
+This is a standalone backend service that processes wallet adjustments (debits) for Sanchar Mitra services via the Pyro API. It supports **FancySale**,  **SimSwap** and **ESIM**.
 
 ## Architecture & Data Flow
 
 The service operates primarily via a background scheduler that executes the following loop:
-1. **Fetch**: Reads eligible records from the Oracle database (e.g., `CAF_ADMIN.VANITYSALE_FRANCH_DATA` for FancySale) where `CAF_ENTRY_DONE IN ('N', 'QM', 'QB')`.
+1. **Fetch**: 
+   - **FANCYSALE**  Reads eligible records from the Oracle database `CAF_ADMIN.VANITYSALE_FRANCH_DATA`  where `CAF_ENTRY_DONE IN ('N', 'QM', 'QB')`.
+   - **SIMSWAP**  Reads eligible records from the Oracle database  `CAF_ADMIN.SIMSWAP_AMOUNT_DEDUCT_REQUESTS` where `CAF_ENTRY_DONE IN ('N', 'QM', 'QB')`.
+   - **ESIM**  Reads eligible records from the Oracle database  `CAF_ADMIN.SIMSWAP_AMOUNT_DEDUCT_REQUESTS` where `CAF_ENTRY_DONE IN ('N', 'QM', 'QB')`.
 2. **Claim**: Marks the rows as `P` (Processing) atomically to prevent duplicate processing.
 3. **Submit**: Calls the Pyro API (`/erp-stock-api/service-wallet-adjustment`) with the decrypted MPIN and transaction details.
 4. **Writeback**: Updates the Oracle database with the result (`Y` for Success, `R` for Rejected).
@@ -137,7 +140,7 @@ cd /opt/debit_services
 
 # Load the image
 
-  gzip -d pyro_debit_service_v1.tar.gz
+gzip -d pyro_debit_service_v1.tar.gz
 docker load -i pyro_debit_service_v1.tar
 
 # Make sure your .env and docker-compose.yml are here
